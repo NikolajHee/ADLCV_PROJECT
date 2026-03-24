@@ -1,7 +1,25 @@
 ````markdown
 # adlcv_project
 
-A short description of the project.
+## Introduction (written by Marco)
+
+Modern diffusion-based image editing systems can generate highly realistic im-
+ages, yet they often struggle with deciding where objects should be placed in
+a scene. Object occurrence define spatial priors: pizzas belong on tables, kites
+appear in the sky, and boats occur on water. Learning these priors is essential
+for controllable image editing, compositing, and scene understanding.
+Recent work introduced a large-scale dataset of object placement annota-
+tions generated using diffusion inpainting pipelines. The dataset contains ap-
+proximately 27 million bounding box annotations across 27k scenes, where each
+bounding box represents a candidate placement for an object class.
+Many valid placements exist for a given object, and these placements form a
+spatial distribution rather than a single target. The goal of these course projects
+is to develop models that leverage and learns from this dense supervision and
+predict spatial distributions of object placements
+
+## POSTER
+
+https://da.overleaf.com/1838933468npwsmqmhrsbv#103f63
 
 ## Project structure
 
