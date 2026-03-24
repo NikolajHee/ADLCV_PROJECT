@@ -8,6 +8,11 @@ PYTHON_VERSION = "3.12"
 
 # Project commands
 @task
+def download_data(ctx: Context) -> None:
+    """Download data."""
+    ctx.run(f"uv run src/{PROJECT_NAME}/data.py download-background-images", echo=True, pty=not WINDOWS)
+
+@task
 def preprocess_data(ctx: Context) -> None:
     """Preprocess data."""
     ctx.run(f"uv run src/{PROJECT_NAME}/data.py data/raw data/processed", echo=True, pty=not WINDOWS)

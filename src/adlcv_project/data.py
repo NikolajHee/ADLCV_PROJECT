@@ -14,6 +14,11 @@ from datasets import load_dataset
 import torchvision.transforms as T
 
 
+app = typer.Typer()
+
+
+
+
 class HiddenObjectsDataset(Dataset):
     def __init__(self, places_root, split="train"):
         self.hf_data = load_dataset("marco-schouten/hidden-objects", split=split)
@@ -75,12 +80,22 @@ def get_streaming_loader(places_root, batch_size=32):
         }
     return DataLoader(dataset, batch_size=batch_size, collate_fn=collate_fn)
 
+@app.command()
 def download_background_images() -> None:
+    root = "data/places365"   
+    dataset = datasets.Places365(root=root, split='val', small=True, download=True)
+    logger.info(f"Downloaded background images: {len(dataset)} to {root}")
+
+@app.command()
+def other() -> None:
     root = "data/places365"   
     dataset = datasets.Places365(root=root, split='val', small=True, download=True)
     logger.info(f"Downloaded background images: {len(dataset)} to {root}")
 
 
 
+# if __name__ == "__main__":
+#     typer.run(download_background_images)
+
 if __name__ == "__main__":
-    typer.run(download_background_images)
+    app()
