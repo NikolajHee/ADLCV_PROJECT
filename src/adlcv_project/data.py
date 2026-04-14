@@ -13,11 +13,7 @@ from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset
 import torchvision.transforms as T
 
-
 app = typer.Typer()
-
-
-
 
 class HiddenObjectsDataset(Dataset):
     def __init__(self, places_root, split="train"):
@@ -92,10 +88,6 @@ def other() -> None:
     dataset = datasets.Places365(root=root, split='val', small=True, download=True)
     logger.info(f"Downloaded background images: {len(dataset)} to {root}")
 
-
-
-# if __name__ == "__main__":
-#     typer.run(download_background_images)
 
 if __name__ == "__main__":
     app()
