@@ -130,35 +130,40 @@ class PositionalEmbedding(nn.Module):
         positions = positions[None, :, :].expand(batch_size, seq_length, embed_dim)
         return x + positions
         
+# in transformer.py
 class SimpleTransformer(nn.Module):
     def __init__(self, embed_dim, num_heads, num_layers, max_seq_len,
-                 pos_enc='fixed', pool='cls', dropout=0.0, 
-                 fc_dim=None, num_tokens=50_000, num_classes=2):
+                 pos_enc='fixed', pool=None, dropout=0.0, fc_dim=None):
         super().__init__()
 
-        assert pool in ['cls', 'mean', 'max']
-        assert pos_enc in ['fixed', 'learnable']
+        assert pool in [None, 'cls', 'mean', 'max']
+        self.pool = pool
 
-        self.pool, self.pos_enc, = pool, pos_enc
-        self.token_embedding = nn.Embedding(embedding_dim=embed_dim, num_embeddings=num_tokens)
+        self.positional_encoding = PositionalEncoding(
+            embed_dim=embed_dim,
+            max_seq_len=max_seq_len
+        )
 
-        # # Initialize cls token parameter
-        # if self.pool == 'cls':
-        #     self.cls_token = nn.Parameter(torch.randn(1, 1, embed_dim))
-        #     max_seq_len +=1
-        
-        if self.pos_enc == 'fixed':
-            self.positional_encoding = PositionalEncoding(embed_dim=embed_dim, max_seq_len=max_seq_len)
-        elif self.pos_enc == 'learnable':
-            self.positional_encoding = PositionalEmbedding(embed_dim=embed_dim, max_seq_len=max_seq_len)
+        self.transformer_blocks = nn.Sequential(*[
+            EncoderBlock(embed_dim, num_heads, fc_dim=fc_dim, dropout=dropout)
+            for _ in range(num_layers)
+        ])
 
-        transformer_blocks = []
-        for i in range(num_layers):
-            transformer_blocks.append(
-                EncoderBlock(embed_dim=embed_dim, num_heads=num_heads, fc_dim=fc_dim, dropout=dropout))
-
-        self.transformer_blocks = nn.Sequential(*transformer_blocks)
         self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        x = self.positional_encoding(x)
+        x = self.dropout(x)
+        x = self.transformer_blocks(x)
+
+        if self.pool is None:
+            return x
+        elif self.pool == 'max':
+            return x.max(dim=1)[0]
+        elif self.pool == 'mean':
+            return x.mean(dim=1)
+        elif self.pool == 'cls':
+            return x[:, 0, :]
 
     def forward(self, x):
         #tokens = self.$(x)
