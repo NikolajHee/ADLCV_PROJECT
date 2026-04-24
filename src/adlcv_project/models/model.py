@@ -48,11 +48,11 @@ class FiLM(nn.Module):
 
 
 class MainModel(nn.Module):
-    def __init__(self, backbone, transformer, head):
+    def __init__(self, backbone, transformer, decoder):
         super().__init__()
         self.backbone = backbone
         self.transformer = transformer
-        self.head = head
+        self.decoder = decoder
         self.text_encoder = TextEncoder()
         self.FiLM_layer = FiLM(class_dim=512, feature_channels=2048)  # Example dimensions
 
@@ -60,14 +60,37 @@ class MainModel(nn.Module):
         features = self.backbone(x)['c5']
         class_embeds = self.text_encoder(class_labels)
         features = self.FiLM_layer(features, class_embeds)
+    
+        B, C, H, W = features.size()
+        features = features.view(B, C, H * W).permute(0, 2, 1) # [B, H*W, C]
+
         transformed_features = self.transformer(features)
-        output = self.head(transformed_features)
+
+        patches = transformed_features.view(B, 1, H, W) # Reshape back to [B, C, H, W]
+        
+        output = self.decoder(patches)
+        
         return output
 
 def center_crop_512(img, img_size):
     w, h = img.size
     left, top = (w - img_size) // 2, (h - img_size) // 2
     return img.crop((left, top, left + img_size, top + img_size))
+
+class Decoder(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super().__init__()
+        self.cnn = nn.Sequential(
+            nn.Conv2d(input_dim, 1024, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(1024, 512, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(512, output_dim, kernel_size=3, padding=1)
+        )
+
+    def forward(self, x):
+        return self.cnn(x)
+
 
 if __name__ == "__main__":
     # Example usage
@@ -94,14 +117,23 @@ if __name__ == "__main__":
 
 
     from adlcv_project.models.resnet import MultiScaleBackbone
-    #from adlcv_project.models.transformer import SimpleTransformer
+    from adlcv_project.models.transformer import SimpleTransformer
 
     backbone = MultiScaleBackbone()
 
+    transformer = SimpleTransformer(
+        embed_dim=2048,
+        num_heads=8,
+        num_layers=2,
+        max_seq_len=256
+    )
+
+    decoder = Decoder(input_dim=2048, output_dim=1)  # Example output dimension for binary classification
+
     model = MainModel(
         backbone=backbone,
-        transformer=nn.Identity(),
-        head=nn.Identity()
+        transformer=transformer,
+        decoder=decoder
     )
 
     img_og = Image.open(os.path.join(DEMO_DIR, "data_large_standard/w/wave/00002144.jpg",)).convert("RGB")

@@ -142,10 +142,10 @@ class SimpleTransformer(nn.Module):
         self.pool, self.pos_enc, = pool, pos_enc
         self.token_embedding = nn.Embedding(embedding_dim=embed_dim, num_embeddings=num_tokens)
 
-        # Initialize cls token parameter
-        if self.pool == 'cls':
-            self.cls_token = nn.Parameter(torch.randn(1, 1, embed_dim))
-            max_seq_len +=1
+        # # Initialize cls token parameter
+        # if self.pool == 'cls':
+        #     self.cls_token = nn.Parameter(torch.randn(1, 1, embed_dim))
+        #     max_seq_len +=1
         
         if self.pos_enc == 'fixed':
             self.positional_encoding = PositionalEncoding(embed_dim=embed_dim, max_seq_len=max_seq_len)
@@ -158,19 +158,18 @@ class SimpleTransformer(nn.Module):
                 EncoderBlock(embed_dim=embed_dim, num_heads=num_heads, fc_dim=fc_dim, dropout=dropout))
 
         self.transformer_blocks = nn.Sequential(*transformer_blocks)
-        self.classifier = nn.Linear(embed_dim, num_classes)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        tokens = self.token_embedding(x)
-        batch_size, seq_length, embed_dim = tokens.size()
+        #tokens = self.$(x)
+        #batch_size, seq_length, embed_dim = tokens.size()
 
-        # Include cls token in the input sequence
-        if self.pool == 'cls':
-            cls_tokens = self.cls_token.expand(batch_size, -1, -1)
-            tokens = torch.cat((cls_tokens, tokens), dim=1)
+        # # Include cls token in the input sequence
+        # if self.pool == 'cls':
+        #     cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        #     tokens = torch.cat((cls_tokens, tokens), dim=1)
 
-        x = self.positional_encoding(tokens)
+        x = self.positional_encoding(x)
         x = self.dropout(x)
         x = self.transformer_blocks(x)
 
@@ -181,7 +180,7 @@ class SimpleTransformer(nn.Module):
         elif self.pool == 'cls':
             x = x[:, 0, :]
 
-        return self.classifier(x)
+        return x
 
 
 class TransformerClassifier(nn.Module):
