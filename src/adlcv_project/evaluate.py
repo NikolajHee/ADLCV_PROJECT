@@ -5,7 +5,7 @@ from adlcv_project.heatmap_dataset import HeatmapDataset
 from adlcv_project.models.resnet import MultiScaleBackbone
 from adlcv_project.models.transformer import SimpleTransformer
 from adlcv_project.models.model import MainModel, Decoder
-from adlcv_project.visualize import show_gt_vs_pred, visualize_5_samples
+from adlcv_project.visualize import show_gt_vs_pred, visualize_5_samples, plot_loss_curve
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -47,6 +47,9 @@ with torch.no_grad():
     class_embeds = class_embeds.to(device)
 
     pred_logits = model(images, class_embeds)
+
+
+plot_loss_curve("checkpoints/best_model.pt")
 
 show_gt_vs_pred(
     image=images[0].cpu(),

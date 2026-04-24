@@ -39,7 +39,7 @@ def build_class_embedding_cache(index_path, save_path, device):
 
 
 def train():
-    num_epochs = 3
+    num_epochs = 5
     batch_size = 16
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -102,6 +102,8 @@ def train():
     best_loss = float("inf")
     best_path = os.path.join(checkpoint_dir, "best_model.pt")
 
+    epoch_losses = []
+
     for epoch in range(num_epochs):
         model.train()
 
@@ -150,6 +152,7 @@ def train():
             )
 
         epoch_loss = running_loss / num_batches
+        epoch_losses.append(epoch_loss)
         print(f"Epoch {epoch + 1} done | avg_loss={epoch_loss:.4f}")
 
         if epoch_loss < best_loss:
@@ -163,6 +166,7 @@ def train():
                 "loss": best_loss,
                 "batch_size": batch_size,
                 "num_epochs": num_epochs,
+                "epoch_losses": epoch_losses,
             }, best_path)
 
             print(f"Saved new best model to {best_path} | loss={best_loss:.4f}")
@@ -172,3 +176,8 @@ def train():
 
 if __name__ == "__main__":
     train()
+
+    from adlcv_project.visualize import plot_loss_curve
+
+    plot_loss_curve("checkpoints/best_model.pt")
+

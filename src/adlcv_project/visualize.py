@@ -102,3 +102,19 @@ def visualize_5_samples(model, loader, device, alpha=0.45, cmap="jet"):
         axes[1, i].axis("off")
 
     plt.show()
+
+import matplotlib.pyplot as plt
+
+
+def plot_loss_curve(checkpoint_path):
+    ckpt = torch.load(checkpoint_path, map_location="cpu")
+
+    losses = ckpt["epoch_losses"]
+
+    plt.figure(figsize=(8, 5))
+    plt.plot(range(1, len(losses) + 1), losses, marker="o")
+    plt.xlabel("Epoch")
+    plt.ylabel("Average Training Loss")
+    plt.title("Training Loss Curve")
+    plt.grid(True, alpha=0.3)
+    plt.show()
