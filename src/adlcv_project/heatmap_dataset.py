@@ -33,9 +33,43 @@ class HeatmapDataset(Dataset):
         x = torch.from_numpy(np.array(img)).permute(2, 0, 1).float() / 255.0
 
         data = np.load(item["target_path"])
-        target = torch.from_numpy(data["target"]).float()  # [8, 32, 32]
+
+        target_fg_class = str(data["fg_class"])
+        target_bg_path = str(data["bg_path"])
+
+        if target_fg_class != item["fg_class"]:
+            print("FG CLASS MISMATCH")
+            print("index fg_class:", item["fg_class"])
+            print("npz fg_class:", target_fg_class)
+
+        if target_bg_path != item["bg_path"]:
+            print("BG PATH MISMATCH")
+            print("index bg_path:", item["bg_path"])
+            print("npz bg_path:", target_bg_path)
+
+        target = torch.from_numpy(data["target"]).float()
 
         fg_class = item["fg_class"]
         class_embed = self.class_embeddings[fg_class].float()
 
-        return x, class_embed, target, fg_class
+        return x, class_embed, target, fg_class, item["bg_path"]
+    
+
+
+
+if __name__ == "__main__":
+    dataset = HeatmapDataset(
+        index_path="data/preprocessed_targets/train/index.json",
+        data_root="data",
+        class_embedding_path="data/preprocessed_targets/class_embeddings.pt"
+    )
+
+    for i in range(10):
+        item = dataset.index[i]
+        data = np.load(item["target_path"])
+
+        print("------")
+        print("index bg_path:", item["bg_path"])
+        print("npz bg_path:  ", str(data["bg_path"]))
+        print("index class:  ", item["fg_class"])
+        print("npz class:    ", str(data["fg_class"]))

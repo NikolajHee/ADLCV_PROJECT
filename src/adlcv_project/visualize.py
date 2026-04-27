@@ -51,7 +51,8 @@ def visualize_5_samples(model, loader, device, alpha=0.45, cmap="jet"):
     model.eval()
 
     batch = next(iter(loader))
-    images, class_embeds, targets, fg_classes = batch
+    images, class_embeds, targets, fg_classes, bg_paths = batch
+    print("Batch classes:", fg_classes)
 
     images = images.to(device)
     class_embeds = class_embeds.to(device)
@@ -73,6 +74,7 @@ def visualize_5_samples(model, loader, device, alpha=0.45, cmap="jet"):
     )
 
     for i in range(n):
+        print(i, fg_classes[i], bg_paths[i])
         image = images[i].detach().cpu().permute(1, 2, 0).numpy()
         image = np.clip(image, 0, 1)
 
@@ -87,7 +89,10 @@ def visualize_5_samples(model, loader, device, alpha=0.45, cmap="jet"):
             extent=(0, image.shape[1], image.shape[0], 0),
             interpolation="bilinear",
         )
-        axes[0, i].set_title(f"GT: {fg_classes[i]}", fontsize=10)
+        axes[0, i].set_title(
+            f"GT: {fg_classes[i]}\n{bg_paths[i].split('/')[-1]}",
+            fontsize=9
+        )
         axes[0, i].axis("off")
 
         axes[1, i].imshow(image)

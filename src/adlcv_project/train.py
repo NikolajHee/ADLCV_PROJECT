@@ -47,8 +47,8 @@ def train():
     if device == "cuda":
         print(torch.cuda.get_device_name(0))
 
-    index_path = "data/preprocessed_targets/train/index.json"
-    class_embedding_path = "data/preprocessed_targets/class_embeddings.pt"
+    index_path = "data/preprocessed_targets_top20/train/index.json"
+    class_embedding_path = "data/preprocessed_targets_top20/class_embeddings.pt"
     checkpoint_dir = "checkpoints"
     os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -112,7 +112,7 @@ def train():
 
         pbar = tqdm(loader, desc=f"Epoch {epoch + 1}/{num_epochs}")
 
-        for images, class_embeds, targets, fg_classes in pbar:
+        for images, class_embeds, targets, fg_classes, bg_paths in pbar:
             images = images.to(device, non_blocking=True)
             class_embeds = class_embeds.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)

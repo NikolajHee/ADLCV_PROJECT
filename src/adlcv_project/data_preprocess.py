@@ -69,6 +69,43 @@ def group_rows_by_scene_and_class(hf_data, label=1):
 
     return grouped
 
+def filter_top_k_rows(
+    rows,
+    top_k=None,
+    score_key="image_reward_score",
+    reward_higher_is_better=True,
+):
+    if top_k is None or len(rows) <= top_k:
+        return rows
+
+    return sorted(
+        rows,
+        key=lambda r: r[score_key],
+        reverse=reward_higher_is_better,
+    )[:top_k]
+
+
+def split_grouped_by_bg_path(grouped, val_fraction=0.1, seed=42):
+    rng = np.random.default_rng(seed)
+
+    bg_paths = sorted({bg_path for bg_path, fg_class in grouped.keys()})
+    rng.shuffle(bg_paths)
+
+    num_val = int(len(bg_paths) * val_fraction)
+    val_bg_paths = set(bg_paths[:num_val])
+
+    train_grouped = {}
+    val_grouped = {}
+
+    for key, rows in grouped.items():
+        bg_path, fg_class = key
+
+        if bg_path in val_bg_paths:
+            val_grouped[key] = rows
+        else:
+            train_grouped[key] = rows
+
+    return train_grouped, val_grouped
 
 def build_aggregate_target_3d(
     rows,
@@ -131,6 +168,74 @@ def build_aggregate_target_3d(
         "scale_bin_edges": scale_bin_edges,
     }
 
+def save_grouped_targets(
+    grouped,
+    output_dir,
+    class_to_id,
+    scale_bin_edges,
+    label=1,
+    grid_size=32,
+    num_scales=8,
+    sigma_xy=1.25,
+    sigma_s=0.6,
+    score_temperature=0.3,
+    reward_higher_is_better=True,
+    top_k=20,
+):
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    index = []
+
+    for sample_id, ((bg_path, fg_class), rows) in enumerate(
+        tqdm(grouped.items(), desc=f"Saving targets to {output_dir}")
+    ):
+        rows_used = filter_top_k_rows(
+            rows,
+            top_k=top_k,
+            score_key="image_reward_score",
+            reward_higher_is_better=reward_higher_is_better,
+        )
+
+        class_id = class_to_id[fg_class]
+
+        target, meta = build_aggregate_target_3d(
+            rows=rows_used,
+            grid_size=grid_size,
+            num_scales=num_scales,
+            sigma_xy=sigma_xy,
+            sigma_s=sigma_s,
+            score_temperature=score_temperature,
+            reward_higher_is_better=reward_higher_is_better,
+            scale_bin_edges=scale_bin_edges,
+        )
+
+        save_path = output_dir / f"{sample_id:07d}.npz"
+
+        np.savez_compressed(
+            save_path,
+            target=target,
+            bg_path=np.array(bg_path),
+            fg_class=np.array(fg_class),
+            class_id=np.int64(class_id),
+            num_rows=np.int64(len(rows)),
+            num_rows_used=np.int64(len(rows_used)),
+        )
+
+        index.append({
+            "sample_id": sample_id,
+            "bg_path": bg_path,
+            "fg_class": fg_class,
+            "class_id": class_id,
+            "target_path": str(save_path),
+            "num_rows": len(rows),
+            "num_rows_used": len(rows_used),
+        })
+
+    with open(output_dir / "index.json", "w", encoding="utf-8") as f:
+        json.dump(index, f, indent=2)
+
+    return index
 
 def preprocess_training_targets(
     dataset,
@@ -141,7 +246,10 @@ def preprocess_training_targets(
     sigma_xy=1.25,
     sigma_s=0.6,
     score_temperature=0.3,
-    reward_higher_is_better=False,
+    reward_higher_is_better=True,
+    top_k=20,
+    val_fraction=0.1,
+    seed=42,
 ):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -158,43 +266,41 @@ def preprocess_training_targets(
 
     grouped = group_rows_by_scene_and_class(hf_data, label=label)
 
-    index = []
+    train_grouped, val_grouped = split_grouped_by_bg_path(
+        grouped,
+        val_fraction=val_fraction,
+        seed=seed,
+    )
 
-    for sample_id, ((bg_path, fg_class), rows) in enumerate(tqdm(grouped.items(), desc="Saving targets")):
-        class_id = class_to_id[fg_class]
+    train_index = save_grouped_targets(
+        grouped=train_grouped,
+        output_dir=output_dir / "train",
+        class_to_id=class_to_id,
+        scale_bin_edges=scale_bin_edges,
+        label=label,
+        grid_size=grid_size,
+        num_scales=num_scales,
+        sigma_xy=sigma_xy,
+        sigma_s=sigma_s,
+        score_temperature=score_temperature,
+        reward_higher_is_better=reward_higher_is_better,
+        top_k=top_k,
+    )
 
-        target, meta = build_aggregate_target_3d(
-            rows=rows,
-            grid_size=grid_size,
-            num_scales=num_scales,
-            sigma_xy=sigma_xy,
-            sigma_s=sigma_s,
-            score_temperature=score_temperature,
-            reward_higher_is_better=reward_higher_is_better,
-            scale_bin_edges=scale_bin_edges,
-        )
-
-        save_path = output_dir / f"{sample_id:07d}.npz"
-        np.savez_compressed(
-            save_path,
-            target=target,
-            bg_path=np.array(bg_path),
-            fg_class=np.array(fg_class),
-            class_id=np.int64(class_id),
-            num_rows=np.int64(len(rows)),
-        )
-
-        index.append({
-            "sample_id": sample_id,
-            "bg_path": bg_path,
-            "fg_class": fg_class,
-            "class_id": class_id,
-            "target_path": str(save_path),
-            "num_rows": len(rows),
-        })
-
-    with open(output_dir / "index.json", "w", encoding="utf-8") as f:
-        json.dump(index, f, indent=2)
+    val_index = save_grouped_targets(
+        grouped=val_grouped,
+        output_dir=output_dir / "val",
+        class_to_id=class_to_id,
+        scale_bin_edges=scale_bin_edges,
+        label=label,
+        grid_size=grid_size,
+        num_scales=num_scales,
+        sigma_xy=sigma_xy,
+        sigma_s=sigma_s,
+        score_temperature=score_temperature,
+        reward_higher_is_better=reward_higher_is_better,
+        top_k=top_k,
+    )
 
     with open(output_dir / "class_to_id.json", "w", encoding="utf-8") as f:
         json.dump(class_to_id, f, indent=2)
@@ -208,27 +314,36 @@ def preprocess_training_targets(
             "sigma_s": sigma_s,
             "score_temperature": score_temperature,
             "reward_higher_is_better": reward_higher_is_better,
+            "top_k": top_k,
+            "val_fraction": val_fraction,
+            "seed": seed,
             "scale_bin_edges": scale_bin_edges.tolist(),
+            "num_train_samples": len(train_index),
+            "num_val_samples": len(val_index),
         }, f, indent=2)
 
-    return index, class_to_id, scale_bin_edges
+    return train_index, val_index, class_to_id, scale_bin_edges
 
 
 
 def main():
     from adlcv_project.data import HiddenObjectsDatasetStreaming
 
-    dataset = HiddenObjectsDatasetStreaming("../data/", split="train")
+    dataset = HiddenObjectsDatasetStreaming("data", split="train")
+
     preprocess_training_targets(
         dataset,
-        output_dir="../data/preprocessed_targets/train",
+        output_dir="data/preprocessed_targets_top20",
         label=1,
         grid_size=32,
         num_scales=8,
         sigma_xy=1.25,
         sigma_s=0.6,
         score_temperature=0.3,
-        reward_higher_is_better=False,
+        reward_higher_is_better=True,
+        top_k=20,
+        val_fraction=0.1,
+        seed=42,
     )
 
 if __name__ == "__main__":

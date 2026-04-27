@@ -16,12 +16,23 @@ class TextEncoder(nn.Module):
         self.model = CLIPTextModel.from_pretrained(model_name)
 
     def forward(self, text_inputs):
-        # text_inputs: List of strings
+        # Better CLIP prompt template
+        text_inputs = [f"a photo of a {x}" for x in text_inputs]
+
         device = next(self.model.parameters()).device
-        tokenized = self.tokenizer(text_inputs, return_tensors='pt', padding=True, truncation=True)
+
+        tokenized = self.tokenizer(
+            text_inputs,
+            return_tensors="pt",
+            padding=True,
+            truncation=True
+        )
+
         tokenized = {k: v.to(device) for k, v in tokenized.items()}
+
         outputs = self.model(**tokenized)
-        return outputs.last_hidden_state[:, 0, :]  # Use [CLS] token representation
+
+        return outputs.pooler_output
 
 # global injection
 class FiLM(nn.Module):
