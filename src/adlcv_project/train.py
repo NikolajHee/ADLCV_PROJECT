@@ -1,4 +1,4 @@
-from adlcv_project.model import Model
+from adlcv_project.main import Model
 from adlcv_project.data import MyDataset
 
 def train():
