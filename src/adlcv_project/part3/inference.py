@@ -1,119 +1,161 @@
-"""Score a specific bbox placement against a trained Part B model.
+"""Score bbox placements against your trained CLIP-FiLM heatmap model."""
 
-The model produces a [num_scales, grid_size, grid_size] probability distribution
-over (scale, y, x) for a given (image, class). We extract the probability at
-the query bbox's location using bilinear interpolation in the spatial dims.
-"""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn.functional as F
+from PIL import Image
 
-from src.config import (
-    CLASS_EMBEDDINGS_PATH,
-    GRID_SIZE,
-    NUM_SCALES,
-    PLACES365_ROOT,
-    SCALE_BIN_EDGES_PATH,
-)
-from src.data.images import load_scene_image
-from src.partA.scale_bins import load_edges
-from src.partB.model import PlacementModel
+from adlcv_project.models.resnet import MultiScaleBackbone
+from adlcv_project.models.transformer import SimpleTransformer
+from adlcv_project.models.model import MainModel, Decoder, TextEncoder
+
+
+def center_crop_512(img: Image.Image, img_size: int = 512) -> Image.Image:
+    w, h = img.size
+    left = (w - img_size) // 2
+    top = (h - img_size) // 2
+    return img.crop((left, top, left + img_size, top + img_size))
+
+
+def preprocess_image(image, device, img_size: int = 512) -> torch.Tensor:
+    if isinstance(image, Image.Image):
+        image = center_crop_512(image.convert("RGB"), img_size)
+        image = np.asarray(image)
+
+    if isinstance(image, np.ndarray):
+        image = torch.from_numpy(image).permute(2, 0, 1).float()
+        if image.max() > 1:
+            image = image / 255.0
+
+    if isinstance(image, torch.Tensor):
+        if image.ndim == 3:
+            image = image.unsqueeze(0)
+        elif image.ndim != 4:
+            raise ValueError(f"Expected image tensor [3,H,W] or [B,3,H,W], got {image.shape}")
+        image = image.float()
+    else:
+        raise TypeError(f"Unsupported image type: {type(image)}")
+
+    return image.to(device)
+
+
+def assign_scale_bin(log_area: float, scale_bin_edges: np.ndarray) -> int:
+    s = np.searchsorted(scale_bin_edges, log_area, side="right") - 1
+    s = np.clip(s, 0, len(scale_bin_edges) - 2)
+    return int(s)
 
 
 class PlacementScorer:
-    """Wraps a trained PlacementModel for OOC-style likelihood queries."""
-
     def __init__(
         self,
         checkpoint_path: Path,
+        preprocess_dir: Path,
         device: str = "cpu",
-        scale_bin_edges_path: Path = SCALE_BIN_EDGES_PATH,
-        class_embeddings_path: Path = CLASS_EMBEDDINGS_PATH,
-    ) -> None:
-        self.device = device
+        img_size: int = 512,
+    ):
+        self.device = torch.device(device)
+        self.img_size = img_size
 
-        self.model = PlacementModel().to(device)
-        ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-        self.model.load_state_dict(ckpt["model_state_dict"])
-        self.model.eval()
+        preprocess_dir = Path(preprocess_dir)
+        checkpoint_path = Path(checkpoint_path)
 
-        self.scale_bin_edges = load_edges(scale_bin_edges_path)
-        self.class_embeddings: dict[str, torch.Tensor] = torch.load(
-            class_embeddings_path, weights_only=False
+        with open(preprocess_dir / "preprocess_config.json", "r") as f:
+            config = json.load(f)
+
+        self.grid_size = int(config["grid_size"])
+        self.num_scales = int(config["num_scales"])
+        self.scale_bin_edges = np.asarray(config["scale_bin_edges"], dtype=np.float64)
+
+        backbone = MultiScaleBackbone()
+
+        transformer = SimpleTransformer(
+            embed_dim=1024,
+            num_heads=8,
+            num_layers=2,
+            max_seq_len=self.grid_size * self.grid_size,
+            pool=None,
         )
 
-    def predict_heatmap(
-        self,
-        image: torch.Tensor | np.ndarray,
-        class_name: str,
-    ) -> np.ndarray:
-        """Run forward pass and return the full [num_scales, H, W] probability heatmap.
+        decoder = Decoder(
+            input_dim=1024,
+            output_dim=self.num_scales,
+        )
 
-        Args:
-            image: (3, 512, 512) tensor in [0, 1], or (512, 512, 3) uint8 array.
-            class_name: Object class name (must exist in class_embeddings).
+        self.model = MainModel(
+            backbone=backbone,
+            transformer=transformer,
+            decoder=decoder,
+        ).to(self.device)
 
-        Returns:
-            np.ndarray of shape (num_scales, grid_size, grid_size), sums to 1.
-        """
-        if isinstance(image, np.ndarray):
-            image = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
+        self.text_encoder = TextEncoder().to(self.device)
+        self.text_encoder.eval()
 
-        image = image.unsqueeze(0).to(self.device)
-        cls_emb = self.class_embeddings[class_name].unsqueeze(0).to(self.device)
+        ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        state_dict = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
+
+        self.model.load_state_dict(state_dict)
+        self.model.eval()
+
+    def predict_heatmap(self, image, class_name: str) -> np.ndarray:
+        image = preprocess_image(image, self.device, img_size=self.img_size)
 
         with torch.no_grad():
-            logits = self.model(image, cls_emb)
-            B = logits.size(0)
-            probs = F.softmax(logits.reshape(B, -1), dim=1).reshape(B, NUM_SCALES, GRID_SIZE, GRID_SIZE)
+            class_embeds = self.text_encoder([class_name])
+            logits = self.model(image, class_embeds)
 
-        return probs[0].cpu().numpy()
+            if logits.ndim != 4:
+                raise ValueError(f"Expected logits [B,S,H,W], got {logits.shape}")
 
-    def score_bbox(
-        self,
-        image: torch.Tensor | np.ndarray,
-        class_name: str,
-        bbox: list[float] | np.ndarray,
-    ) -> float:
-        """Return the log-likelihood of one specific bbox placement.
+            B, S, H, W = logits.shape
 
-        Args:
-            image: see predict_heatmap.
-            class_name: object class name.
-            bbox: normalized [x, y, w, h] in [0, 1].
+            probs = F.softmax(logits.reshape(B, -1), dim=1).reshape(B, S, H, W)
 
-        Returns:
-            log-likelihood (single float). Higher = more plausible.
-        """
+        return probs[0].detach().cpu().numpy()
+
+    def score_bbox(self, image, class_name: str, bbox) -> float:
         heatmap = self.predict_heatmap(image, class_name)
-        return _bilinear_log_likelihood(heatmap, bbox, self.scale_bin_edges)
+
+        return bilinear_log_likelihood(
+            heatmap=heatmap,
+            bbox=bbox,
+            scale_bin_edges=self.scale_bin_edges,
+            grid_size=self.grid_size,
+            num_scales=self.num_scales,
+        )
 
 
-def _bilinear_log_likelihood(
+def bilinear_log_likelihood(
     heatmap: np.ndarray,
-    bbox: list[float] | np.ndarray,
+    bbox,
     scale_bin_edges: np.ndarray,
-    grid_size: int = GRID_SIZE,
-    num_scales: int = NUM_SCALES,
+    grid_size: int,
+    num_scales: int,
 ) -> float:
-    """Look up the heatmap probability at the bbox's (scale, gy, gx) using
-    bilinear interpolation in the spatial dims, then return its log."""
-    x, y, w, h = bbox
-    cx = x + w / 2.0
-    cy = y + h / 2.0
+    heatmap = np.asarray(heatmap, dtype=np.float64)
+
+    if heatmap.shape != (num_scales, grid_size, grid_size):
+        raise ValueError(
+            f"Expected heatmap shape {(num_scales, grid_size, grid_size)}, got {heatmap.shape}"
+        )
+
+    x, y, w, h = [float(v) for v in bbox]
+
+    if w <= 0 or h <= 0:
+        return float("-inf")
+
+    cx = x + w / 2
+    cy = y + h / 2
 
     if not (0 <= cx <= 1 and 0 <= cy <= 1):
         return float("-inf")
 
     log_area = np.log(max(w * h, 1e-12))
-    s_bin = int(np.clip(
-        np.searchsorted(scale_bin_edges, log_area, side="right") - 1,
-        0, num_scales - 1,
-    ))
+    s_bin = assign_scale_bin(log_area, scale_bin_edges)
 
     gx = cx * (grid_size - 1)
     gy = cy * (grid_size - 1)
@@ -122,6 +164,7 @@ def _bilinear_log_likelihood(
     gy0 = int(np.floor(gy))
     gx1 = min(gx0 + 1, grid_size - 1)
     gy1 = min(gy0 + 1, grid_size - 1)
+
     fx = gx - gx0
     fy = gy - gy0
 
@@ -132,29 +175,4 @@ def _bilinear_log_likelihood(
         + heatmap[s_bin, gy1, gx1] * fx * fy
     )
 
-    return float(np.log(max(p, 1e-12)))
-
-
-if __name__ == "__main__":
-    from src.config import CHECKPOINTS_DIR
-
-    ckpt_path = CHECKPOINTS_DIR / "smoke_test_best.pt"
-    if not ckpt_path.exists():
-        print(f"Checkpoint not found: {ckpt_path}")
-        print("Train at least the smoke test first, or point at a different checkpoint.")
-        raise SystemExit(1)
-
-    scorer = PlacementScorer(checkpoint_path=ckpt_path, device="cpu")
-
-    img = load_scene_image("data_large_standard/k/kitchen/00002986.jpg")
-
-    plausible_bbox = [0.55, 0.65, 0.10, 0.20]
-    implausible_bbox = [0.10, 0.10, 0.10, 0.20]
-
-    score_a = scorer.score_bbox(img, "bottle", plausible_bbox)
-    score_b = scorer.score_bbox(img, "bottle", implausible_bbox)
-
-    print(f"Bottle in plausible spot (counter):     log-lik = {score_a:.3f}")
-    print(f"Bottle in implausible spot (top-left):  log-lik = {score_b:.3f}")
-    print(f"\nPlausible should score higher than implausible.")
-    print(f"With smoke-test model (barely trained), this may not hold reliably.")
+    return float(np.log(max(float(p), 1e-12)))

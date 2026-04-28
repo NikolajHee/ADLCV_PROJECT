@@ -1,21 +1,46 @@
-"""Visualization for Part C evaluation results.
+"""Visualization for Part C evaluation results."""
 
-Two main figures:
-- score_distribution_and_curves: histograms + ROC + PR curves (the headline figure)
-- qualitative_gallery: image grid with predicted heatmaps and likelihood scores
-"""
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
+from PIL import Image
 from scipy.ndimage import zoom
 
-from src.config import CHECKPOINTS_DIR, FIGURES_DIR, PLACES365_ROOT
-from src.data.images import load_scene_image
-from src.partC.inference import PlacementScorer
+from adlcv_project.part3.inference import PlacementScorer
+
+
+def load_scene_image(bg_path: str | Path, root: Path | None = None) -> Image.Image:
+    bg_path = Path(bg_path)
+
+    if bg_path.is_absolute():
+        path = bg_path
+    elif root is not None:
+        path = root / bg_path
+    else:
+        path = bg_path
+
+    if not path.exists():
+        raise FileNotFoundError(path)
+
+    return Image.open(path).convert("RGB")
+
+
+def to_numpy_heatmap(heatmap):
+    if isinstance(heatmap, torch.Tensor):
+        heatmap = heatmap.detach().cpu().numpy()
+
+    heatmap = np.asarray(heatmap)
+
+    if heatmap.ndim == 4:
+        heatmap = heatmap[0]
+
+    return heatmap
 
 
 def plot_score_distribution_and_curves(
@@ -23,9 +48,11 @@ def plot_score_distribution_and_curves(
     output_path: Path | None = None,
     title_suffix: str = "",
 ) -> None:
-    """Three-panel figure: score histograms, ROC curve, PR curve."""
-    in_scores = np.array(metrics["in_dist_scores"])
-    ooc_scores = np.array(metrics["ooc_scores"])
+    in_scores = np.asarray(metrics["in_dist_scores"], dtype=float)
+    ooc_scores = np.asarray(metrics["ooc_scores"], dtype=float)
+
+    in_scores = in_scores[np.isfinite(in_scores)]
+    ooc_scores = ooc_scores[np.isfinite(ooc_scores)]
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
 
@@ -34,21 +61,22 @@ def plot_score_distribution_and_curves(
         max(in_scores.max(), ooc_scores.max()),
         50,
     )
-    axes[0].hist(in_scores, bins=bins, alpha=0.6, label=f"In-distribution (n={len(in_scores)})", color="tab:green")
-    axes[0].hist(ooc_scores, bins=bins, alpha=0.6, label=f"OOC (n={len(ooc_scores)})", color="tab:red")
-    axes[0].axvline(in_scores.mean(), color="tab:green", linestyle="--", alpha=0.7, label=f"in-dist mean = {in_scores.mean():.2f}")
-    axes[0].axvline(ooc_scores.mean(), color="tab:red", linestyle="--", alpha=0.7, label=f"OOC mean = {ooc_scores.mean():.2f}")
+
+    axes[0].hist(in_scores, bins=bins, alpha=0.6, label=f"In-dist n={len(in_scores)}")
+    axes[0].hist(ooc_scores, bins=bins, alpha=0.6, label=f"OOC n={len(ooc_scores)}")
+    axes[0].axvline(in_scores.mean(), linestyle="--", label=f"in mean={in_scores.mean():.2f}")
+    axes[0].axvline(ooc_scores.mean(), linestyle="--", label=f"OOC mean={ooc_scores.mean():.2f}")
     axes[0].set_xlabel("Log-likelihood")
     axes[0].set_ylabel("Count")
     axes[0].set_title(f"Score distributions{title_suffix}")
     axes[0].legend(fontsize=9)
     axes[0].grid(alpha=0.3)
 
-    fpr = np.array(metrics["fpr"])
-    tpr = np.array(metrics["tpr"])
-    auroc = metrics["auroc"]
-    axes[1].plot(fpr, tpr, color="tab:blue", linewidth=2, label=f"AUROC = {auroc:.3f}")
-    axes[1].plot([0, 1], [0, 1], color="gray", linestyle="--", alpha=0.5, label="random")
+    fpr = np.asarray(metrics["fpr"], dtype=float)
+    tpr = np.asarray(metrics["tpr"], dtype=float)
+
+    axes[1].plot(fpr, tpr, linewidth=2, label=f"AUROC={metrics['auroc']:.3f}")
+    axes[1].plot([0, 1], [0, 1], linestyle="--", alpha=0.5, label="random")
     axes[1].set_xlabel("False positive rate")
     axes[1].set_ylabel("True positive rate")
     axes[1].set_title(f"ROC curve{title_suffix}")
@@ -57,13 +85,13 @@ def plot_score_distribution_and_curves(
     axes[1].set_xlim(0, 1)
     axes[1].set_ylim(0, 1.02)
 
-    precision = np.array(metrics["precision"])
-    recall = np.array(metrics["recall"])
-    pr_auc = metrics["pr_auc"]
-    axes[2].plot(recall, precision, color="tab:purple", linewidth=2, label=f"PR-AUC = {pr_auc:.3f}")
+    precision = np.asarray(metrics["precision"], dtype=float)
+    recall = np.asarray(metrics["recall"], dtype=float)
+
+    axes[2].plot(recall, precision, linewidth=2, label=f"PR-AUC={metrics['pr_auc']:.3f}")
 
     base_rate = len(ooc_scores) / (len(in_scores) + len(ooc_scores))
-    axes[2].axhline(base_rate, color="gray", linestyle="--", alpha=0.5, label=f"random ({base_rate:.2f})")
+    axes[2].axhline(base_rate, linestyle="--", alpha=0.5, label=f"random={base_rate:.2f}")
     axes[2].set_xlabel("Recall")
     axes[2].set_ylabel("Precision")
     axes[2].set_title(f"Precision-Recall curve{title_suffix}")
@@ -76,64 +104,95 @@ def plot_score_distribution_and_curves(
 
     if output_path is not None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(output_path, dpi=120, bbox_inches="tight")
+        plt.savefig(output_path, dpi=150, bbox_inches="tight")
         print(f"Saved figure to {output_path}")
+
     plt.show()
 
 
 def plot_qualitative_gallery(
     results: list[dict],
     scorer: PlacementScorer,
+    image_root: Path | None = None,
     n_examples: int = 8,
     title: str = "",
     output_path: Path | None = None,
     seed: int = 0,
 ) -> None:
-    """Sample examples from results, show image + predicted heatmap + bbox + score."""
     rng = np.random.default_rng(seed)
-    valid = [r for r in results if not (np.isnan(r["log_likelihood"]) or np.isinf(r["log_likelihood"]))]
+
+    valid = [
+        r for r in results
+        if np.isfinite(float(r["log_likelihood"]))
+    ]
+
+    if len(valid) == 0:
+        raise ValueError("No valid examples to plot.")
 
     sample = rng.choice(valid, size=min(n_examples, len(valid)), replace=False)
 
     n_cols = 4
-    n_rows = (len(sample) + n_cols - 1) // n_cols
+    n_rows = int(np.ceil(len(sample) / n_cols))
+
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
-    axes = np.atleast_2d(axes)
+    axes = np.asarray(axes).reshape(n_rows, n_cols)
 
     for i, ex in enumerate(sample):
         row, col = i // n_cols, i % n_cols
         ax = axes[row, col]
 
         try:
-            img = load_scene_image(ex["bg_path"])
+            img = load_scene_image(ex["bg_path"], root=image_root)
         except FileNotFoundError:
-            ax.text(0.5, 0.5, f"Missing image:\n{ex['bg_path']}",
-                    ha="center", va="center", transform=ax.transAxes)
+            ax.text(
+                0.5,
+                0.5,
+                f"Missing image:\n{ex['bg_path']}",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
             ax.axis("off")
             continue
 
+        img_w, img_h = img.size
+
         heatmap = scorer.predict_heatmap(img, ex["fg_class"])
-        heatmap_2d = heatmap.sum(axis=0)
-        heatmap_up = zoom(heatmap_2d, 512 / 32, order=1)
+        heatmap = to_numpy_heatmap(heatmap)
+
+        if heatmap.ndim == 3:
+            heatmap_2d = heatmap.sum(axis=0)
+        elif heatmap.ndim == 2:
+            heatmap_2d = heatmap
+        else:
+            raise ValueError(f"Unexpected heatmap shape: {heatmap.shape}")
+
+        heatmap_h, heatmap_w = heatmap_2d.shape
+        heatmap_up = zoom(heatmap_2d, (img_h / heatmap_h, img_w / heatmap_w), order=1)
 
         ax.imshow(img)
         ax.imshow(heatmap_up, cmap="hot", alpha=0.5)
 
-        x, y, w, h = ex["bbox"]
+        x, y, w, h = [float(v) for v in ex["bbox"]]
+
         rect = plt.Rectangle(
-            (x * 512, y * 512), w * 512, h * 512,
-            fill=False, edgecolor="cyan", linewidth=2,
+            (x * img_w, y * img_h),
+            w * img_w,
+            h * img_h,
+            fill=False,
+            edgecolor="cyan",
+            linewidth=2,
         )
         ax.add_patch(rect)
 
         is_anom = ex.get("is_anomalous", False)
-        ll = ex["log_likelihood"]
-        marker = "[OOC]" if is_anom else "[in-dist]"
+        ll = float(ex["log_likelihood"])
+        marker = "OOC" if is_anom else "in-dist"
 
         if is_anom and "original_class" in ex:
-            title_str = f"{marker} class={ex['fg_class']} (was {ex['original_class']})\nlog-lik={ll:.2f}"
+            title_str = f"{marker}: {ex['fg_class']}\nwas {ex['original_class']} | ll={ll:.2f}"
         else:
-            title_str = f"{marker} class={ex['fg_class']}\nlog-lik={ll:.2f}"
+            title_str = f"{marker}: {ex['fg_class']}\nll={ll:.2f}"
 
         ax.set_title(title_str, fontsize=9)
         ax.axis("off")
@@ -146,45 +205,59 @@ def plot_qualitative_gallery(
 
     if output_path is not None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(output_path, dpi=120, bbox_inches="tight")
+        plt.savefig(output_path, dpi=150, bbox_inches="tight")
         print(f"Saved figure to {output_path}")
+
     plt.show()
 
 
-if __name__ == "__main__":
-    results_path = CHECKPOINTS_DIR / "partC_results_smoke_test.json"
-    if not results_path.exists():
-        print(f"Results not found: {results_path}")
-        print("Run src.partC.evaluate first.")
-        raise SystemExit(1)
+def main():
+    parser = argparse.ArgumentParser()
 
-    with open(results_path) as f:
+    parser.add_argument("--results", type=Path, required=True)
+    parser.add_argument("--preprocess-dir", type=Path, default=Path("data/preprocessed_targets_top20"))
+    parser.add_argument("--figures-dir", type=Path, default=Path("figures/partC"))
+    parser.add_argument("--image-root", type=Path, default=Path("data"))
+    parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--n-examples", type=int, default=8)
+
+    args = parser.parse_args()
+
+    with open(args.results, "r") as f:
         results_data = json.load(f)
 
     metrics = results_data["metrics"]
-    title_suffix = " (smoke test)"
+    checkpoint_path = Path(results_data["checkpoint"])
 
     plot_score_distribution_and_curves(
         metrics,
-        output_path=FIGURES_DIR / "partC_eval_smoke_test.png",
-        title_suffix=title_suffix,
+        output_path=args.figures_dir / "partC_score_distribution_and_curves.png",
     )
 
-    ckpt_path = Path(results_data["checkpoint"])
-    scorer = PlacementScorer(checkpoint_path=ckpt_path, device="cpu")
+    scorer = PlacementScorer(
+        checkpoint_path=checkpoint_path,
+        preprocess_dir=args.preprocess_dir,
+        device=args.device,
+    )
 
     plot_qualitative_gallery(
         results_data["in_dist_results"],
-        scorer,
-        n_examples=8,
-        title=f"In-distribution gallery{title_suffix}",
-        output_path=FIGURES_DIR / "partC_gallery_in_dist_smoke_test.png",
+        scorer=scorer,
+        image_root=args.image_root,
+        n_examples=args.n_examples,
+        title="In-distribution examples",
+        output_path=args.figures_dir / "partC_gallery_in_distribution.png",
     )
 
     plot_qualitative_gallery(
         results_data["ooc_results"],
-        scorer,
-        n_examples=8,
-        title=f"OOC gallery{title_suffix}",
-        output_path=FIGURES_DIR / "partC_gallery_ooc_smoke_test.png",
+        scorer=scorer,
+        image_root=args.image_root,
+        n_examples=args.n_examples,
+        title="OOC class-swap examples",
+        output_path=args.figures_dir / "partC_gallery_ooc.png",
     )
+
+
+if __name__ == "__main__":
+    main()

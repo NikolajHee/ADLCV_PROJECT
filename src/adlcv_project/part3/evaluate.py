@@ -1,40 +1,70 @@
 """Evaluate Part C: score in-distribution and OOC test sets, compute AUROC."""
+
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
 import numpy as np
-import torch
+from PIL import Image
 from sklearn.metrics import auc, precision_recall_curve, roc_auc_score, roc_curve
 from tqdm import tqdm
 
-from src.config import (
-    CHECKPOINTS_DIR,
-    PLACES365_ROOT,
-    PREPROCESSED_DIR,
-)
-from src.data.images import load_scene_image
-from src.partC.inference import PlacementScorer
+from adlcv_project.part3.inference import PlacementScorer
+
+
+def load_scene_image(bg_path: str | Path, root: Path | None = None) -> Image.Image:
+    bg_path = Path(bg_path)
+
+    if bg_path.is_absolute():
+        image_path = bg_path
+    elif root is not None:
+        image_path = root / bg_path
+    else:
+        image_path = bg_path
+
+    if not image_path.exists():
+        raise FileNotFoundError(image_path)
+
+    return Image.open(image_path).convert("RGB")
+
+
+def load_json_list(path: Path) -> list[dict]:
+    with open(path, "r") as f:
+        data = json.load(f)
+
+    if not isinstance(data, list):
+        raise ValueError(f"Expected {path} to contain a list.")
+
+    return data
 
 
 def score_test_set(
     scorer: PlacementScorer,
     examples: list[dict],
-    places365_root: Path = PLACES365_ROOT,
+    image_root: Path | None = None,
 ) -> list[dict]:
-    """Score every example in a test set.
-
-    Returns:
-        List of dicts with the original example fields plus 'log_likelihood'.
-    """
     results = []
 
     for ex in tqdm(examples, desc="Scoring"):
         try:
-            img = load_scene_image(ex["bg_path"], root=places365_root)
-            log_lik = scorer.score_bbox(img, ex["fg_class"], ex["bbox"])
-        except FileNotFoundError:
+            img = load_scene_image(ex["bg_path"], root=image_root)
+
+            log_lik = scorer.score_bbox(
+                image=img,
+                class_name=ex["fg_class"],
+                bbox=ex["bbox"],
+            )
+
+            log_lik = float(log_lik)
+
+        except FileNotFoundError as e:
+            print(f"Missing image: {e}")
+            log_lik = float("nan")
+
+        except Exception as e:
+            print(f"Failed example {ex.get('entry_id', 'unknown')}: {e}")
             log_lik = float("nan")
 
         results.append({**ex, "log_likelihood": log_lik})
@@ -42,39 +72,40 @@ def score_test_set(
     return results
 
 
-def compute_auroc(
-    in_dist_results: list[dict],
-    ooc_results: list[dict],
-) -> dict:
-    """Compute AUROC and PR-AUC on combined results.
+def valid_scores(results: list[dict]) -> np.ndarray:
+    scores = np.asarray([r["log_likelihood"] for r in results], dtype=float)
+    return scores[np.isfinite(scores)]
 
-    Returns:
-        Dict with 'auroc', 'pr_auc', 'fpr', 'tpr', 'precision', 'recall',
-        'in_dist_scores', 'ooc_scores', plus counts.
-    """
-    in_scores = np.array(
-        [r["log_likelihood"] for r in in_dist_results
-         if not np.isnan(r["log_likelihood"]) and not np.isinf(r["log_likelihood"])]
-    )
-    ooc_scores = np.array(
-        [r["log_likelihood"] for r in ooc_results
-         if not np.isnan(r["log_likelihood"]) and not np.isinf(r["log_likelihood"])]
-    )
+
+def compute_auroc(in_dist_results: list[dict], ooc_results: list[dict]) -> dict:
+    in_scores = valid_scores(in_dist_results)
+    ooc_scores = valid_scores(ooc_results)
+
+    if len(in_scores) == 0:
+        raise ValueError("No valid in-distribution scores.")
+    if len(ooc_scores) == 0:
+        raise ValueError("No valid OOC scores.")
 
     scores = np.concatenate([in_scores, ooc_scores])
-    labels = np.concatenate([np.zeros(len(in_scores)), np.ones(len(ooc_scores))])
 
-    auroc = roc_auc_score(labels, -scores)
-    fpr, tpr, _ = roc_curve(labels, -scores)
+    labels = np.concatenate([
+        np.zeros(len(in_scores), dtype=int),
+        np.ones(len(ooc_scores), dtype=int),
+    ])
 
-    precision, recall, _ = precision_recall_curve(labels, -scores)
+    anomaly_scores = -scores
+
+    auroc = roc_auc_score(labels, anomaly_scores)
+    fpr, tpr, _ = roc_curve(labels, anomaly_scores)
+
+    precision, recall, _ = precision_recall_curve(labels, anomaly_scores)
     pr_auc = auc(recall, precision)
 
     return {
         "auroc": float(auroc),
         "pr_auc": float(pr_auc),
-        "n_in_dist": len(in_scores),
-        "n_ooc": len(ooc_scores),
+        "n_in_dist": int(len(in_scores)),
+        "n_ooc": int(len(ooc_scores)),
         "in_dist_scores": in_scores.tolist(),
         "ooc_scores": ooc_scores.tolist(),
         "fpr": fpr.tolist(),
@@ -86,47 +117,61 @@ def compute_auroc(
 
 def evaluate(
     checkpoint_path: Path,
+    preprocess_dir: Path,
     in_dist_path: Path,
     ooc_path: Path,
     output_path: Path,
+    image_root: Path | None = None,
     device: str = "cpu",
 ) -> dict:
-    """Full evaluation pipeline: load model, score test sets, compute metrics."""
-    print(f"Loading scorer from {checkpoint_path}...")
-    scorer = PlacementScorer(checkpoint_path=checkpoint_path, device=device)
+    print(f"Loading scorer from {checkpoint_path}")
 
-    print(f"\nLoading test sets...")
-    with open(in_dist_path) as f:
-        in_dist_examples = json.load(f)
-    with open(ooc_path) as f:
-        ooc_examples = json.load(f)
+    scorer = PlacementScorer(
+        checkpoint_path=checkpoint_path,
+        preprocess_dir=preprocess_dir,
+        device=device,
+    )
+
+    print("\nLoading test sets")
+    in_dist_examples = load_json_list(in_dist_path)
+    ooc_examples = load_json_list(ooc_path)
+
     print(f"  In-distribution: {len(in_dist_examples)} examples")
     print(f"  OOC:             {len(ooc_examples)} examples")
 
-    print("\nScoring in-distribution set...")
-    in_dist_results = score_test_set(scorer, in_dist_examples)
+    print("\nScoring in-distribution set")
+    in_dist_results = score_test_set(
+        scorer=scorer,
+        examples=in_dist_examples,
+        image_root=image_root,
+    )
 
-    print("\nScoring OOC set...")
-    ooc_results = score_test_set(scorer, ooc_examples)
+    print("\nScoring OOC set")
+    ooc_results = score_test_set(
+        scorer=scorer,
+        examples=ooc_examples,
+        image_root=image_root,
+    )
 
-    print("\nComputing metrics...")
+    print("\nComputing metrics")
     metrics = compute_auroc(in_dist_results, ooc_results)
 
-    print(f"\n=== Results ===")
+    print("\n=== Results ===")
     print(f"AUROC:  {metrics['auroc']:.4f}")
     print(f"PR-AUC: {metrics['pr_auc']:.4f}")
-    print(f"In-distribution scores: mean={np.mean(metrics['in_dist_scores']):.3f}, "
-          f"std={np.std(metrics['in_dist_scores']):.3f}")
-    print(f"OOC scores:             mean={np.mean(metrics['ooc_scores']):.3f}, "
-          f"std={np.std(metrics['ooc_scores']):.3f}")
+    print(f"In-distribution mean: {np.mean(metrics['in_dist_scores']):.3f}")
+    print(f"OOC mean:             {np.mean(metrics['ooc_scores']):.3f}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
     with open(output_path, "w") as f:
         json.dump(
             {
                 "checkpoint": str(checkpoint_path),
+                "preprocess_dir": str(preprocess_dir),
                 "in_dist_path": str(in_dist_path),
                 "ooc_path": str(ooc_path),
+                "image_root": str(image_root) if image_root is not None else None,
                 "metrics": metrics,
                 "in_dist_results": in_dist_results,
                 "ooc_results": ooc_results,
@@ -134,25 +179,35 @@ def evaluate(
             f,
             indent=2,
         )
+
     print(f"\nSaved results to {output_path}")
 
     return metrics
 
 
-if __name__ == "__main__":
-    ckpt_path = CHECKPOINTS_DIR / "smoke_test_best.pt"
-    if not ckpt_path.exists():
-        print(f"Checkpoint not found: {ckpt_path}")
-        raise SystemExit(1)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
 
-    in_dist_path = PREPROCESSED_DIR / "partC_test_sets" / "in_distribution.json"
-    ooc_path = PREPROCESSED_DIR / "partC_test_sets" / "ooc_class_swap.json"
-    output_path = CHECKPOINTS_DIR / "partC_results_smoke_test.json"
+    parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--preprocess-dir", type=Path, default=Path("data/preprocessed_targets_top20"))
+    parser.add_argument("--in-dist", type=Path, required=True)
+    parser.add_argument("--ooc", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--image-root", type=Path, default=Path("data"))
+    parser.add_argument("--device", type=str, default="cpu")
+
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
 
     evaluate(
-        checkpoint_path=ckpt_path,
-        in_dist_path=in_dist_path,
-        ooc_path=ooc_path,
-        output_path=output_path,
-        device="cpu",  # smoke test, CPU is fine
+        checkpoint_path=args.checkpoint,
+        preprocess_dir=args.preprocess_dir,
+        in_dist_path=args.in_dist,
+        ooc_path=args.ooc,
+        output_path=args.output,
+        image_root=args.image_root,
+        device=args.device,
     )
