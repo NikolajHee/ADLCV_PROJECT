@@ -4,15 +4,39 @@ import torch
 from torch.utils.data import Dataset
 from PIL import Image
 import os
+import torchvision.transforms as T
+
 
 class HeatmapDataset(Dataset):
-    def __init__(self, index_path, data_root, class_embedding_path, img_size=512):
+    def __init__(
+        self,
+        index_path,
+        data_root,
+        class_embedding_path,
+        img_size=512,
+        augment=False,
+    ):
         with open(index_path, "r") as f:
             self.index = json.load(f)
 
         self.data_root = data_root
         self.img_size = img_size
         self.class_embeddings = torch.load(class_embedding_path)
+
+        self.augment = augment
+
+        self.image_augment = T.Compose([
+            T.ColorJitter(
+                brightness=0.15,
+                contrast=0.15,
+                saturation=0.10,
+                hue=0.02,
+            ),
+            T.RandomGrayscale(p=0.05),
+            T.RandomApply([
+                T.GaussianBlur(kernel_size=5, sigma=(0.1, 1.0))
+            ], p=0.10),
+        ])
 
     def __len__(self):
         return len(self.index)
@@ -29,6 +53,9 @@ class HeatmapDataset(Dataset):
         img_path = os.path.join(self.data_root, item["bg_path"])
         img = Image.open(img_path).convert("RGB")
         img = self.center_crop_512(img)
+
+        if self.augment:
+            img = self.image_augment(img)
 
         x = torch.from_numpy(np.array(img)).permute(2, 0, 1).float() / 255.0
 
@@ -53,9 +80,6 @@ class HeatmapDataset(Dataset):
         class_embed = self.class_embeddings[fg_class].float()
 
         return x, class_embed, target, fg_class, item["bg_path"]
-    
-
-
 
 if __name__ == "__main__":
     dataset = HeatmapDataset(

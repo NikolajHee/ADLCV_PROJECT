@@ -333,15 +333,15 @@ def main():
 
     preprocess_training_targets(
         dataset,
-        output_dir="data/preprocessed_targets_top20",
+        output_dir="data/preprocessed_targets",
         label=1,
         grid_size=32,
         num_scales=8,
-        sigma_xy=1.25,
-        sigma_s=0.6,
-        score_temperature=0.3,
+        sigma_xy=1.75,
+        sigma_s=0.8,
+        score_temperature=0.6,
         reward_higher_is_better=True,
-        top_k=20,
+        top_k=40,
         val_fraction=0.1,
         seed=42,
     )
