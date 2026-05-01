@@ -1,7 +1,7 @@
 
 # adlcv_project
 
-
+![image](figures/new_model_figure.png)
 
 ## Introduction (written by Marco)
 
