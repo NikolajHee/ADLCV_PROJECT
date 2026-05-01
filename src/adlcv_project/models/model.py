@@ -16,10 +16,23 @@ class TextEncoder(nn.Module):
         self.model = CLIPTextModel.from_pretrained(model_name)
 
     def forward(self, text_inputs):
-        # text_inputs: List of strings
-        tokenized = self.tokenizer(text_inputs, return_tensors='pt', padding=True, truncation=True)
+        # Better CLIP prompt template
+        text_inputs = [f"a photo of a {x}" for x in text_inputs]
+
+        device = next(self.model.parameters()).device
+
+        tokenized = self.tokenizer(
+            text_inputs,
+            return_tensors="pt",
+            padding=True,
+            truncation=True
+        )
+
+        tokenized = {k: v.to(device) for k, v in tokenized.items()}
+
         outputs = self.model(**tokenized)
-        return outputs.last_hidden_state[:, 0, :]  # Use [CLS] token representation
+
+        return outputs.pooler_output
 
 # global injection
 class FiLM(nn.Module):
@@ -53,23 +66,23 @@ class MainModel(nn.Module):
         self.backbone = backbone
         self.transformer = transformer
         self.decoder = decoder
-        self.text_encoder = TextEncoder()
-        self.FiLM_layer = FiLM(class_dim=512, feature_channels=2048)  # Example dimensions
+        self.FiLM_layer = FiLM(class_dim=512, feature_channels=1024)
 
-    def forward(self, x, class_labels):
-        features = self.backbone(x)['c5']
-        class_embeds = self.text_encoder(class_labels)
+    def forward(self, x, class_embeds):
+        features = self.backbone(x)["c4"]
+
+        class_embeds = class_embeds.to(x.device)
         features = self.FiLM_layer(features, class_embeds)
-    
-        B, C, H, W = features.size()
-        features = features.view(B, C, H * W).permute(0, 2, 1) # [B, H*W, C]
 
-        transformed_features = self.transformer(features)
+        B, C, H, W = features.shape
 
-        patches = transformed_features.view(B, 1, H, W) # Reshape back to [B, C, H, W]
-        
-        output = self.decoder(patches)
-        
+        tokens = features.flatten(2).permute(0, 2, 1)
+        tokens = self.transformer(tokens)
+
+        features = tokens.permute(0, 2, 1).view(B, C, H, W)
+
+        output = self.decoder(features)
+
         return output
 
 def center_crop_512(img, img_size):
@@ -122,13 +135,14 @@ if __name__ == "__main__":
     backbone = MultiScaleBackbone()
 
     transformer = SimpleTransformer(
-        embed_dim=2048,
+        embed_dim=1024,
         num_heads=8,
         num_layers=2,
-        max_seq_len=256
+        max_seq_len=32 * 32,
+        pool=None
     )
 
-    decoder = Decoder(input_dim=2048, output_dim=1)  # Example output dimension for binary classification
+    decoder = Decoder(input_dim=1024, output_dim=8)
 
     model = MainModel(
         backbone=backbone,
