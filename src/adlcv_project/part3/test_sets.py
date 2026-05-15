@@ -195,7 +195,7 @@ def main():
     from adlcv_project.data import HiddenObjectsDatasetStreaming
 
     data_root = "data"
-    output_dir = Path("data/preprocessed_targets_top20/partC_test_sets")
+    output_dir = Path("data/preprocessed_targets/partC_test_sets")
 
     label = 1
     val_fraction = 0.1

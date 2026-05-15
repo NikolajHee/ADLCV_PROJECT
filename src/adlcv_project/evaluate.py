@@ -107,7 +107,7 @@ def main():
     batch_size = 32
 
     preprocess_dir = "data/preprocessed_targets"
-    checkpoint_path = "checkpoints/best_model.pt"
+    checkpoint_path = "checkpoints/latest_model.pt"
 
     train_loader = build_loader(
         index_path=f"{preprocess_dir}/train/index.json",

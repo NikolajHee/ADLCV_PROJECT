@@ -168,9 +168,9 @@ def plot_train_val_gt_pred(
     cmap="jet",
 ):
     """
-    Plots:
-        train GT | train prediction
-        val GT   | val prediction
+    Plots all panels on one horizontal row:
+
+        Train GT | Train prediction | Val GT | Val prediction
     """
 
     model.eval()
@@ -207,20 +207,37 @@ def plot_train_val_gt_pred(
         val_logits[val_idx].cpu()
     )
 
-    fig, axes = plt.subplots(2, 2, figsize=(11, 10), tight_layout=True)
+    fig, axes = plt.subplots(
+        1, 4,
+        figsize=(14, 3.6),
+        constrained_layout=True
+    )
 
     plots = [
-        (axes[0, 0], train_image, train_gt,
-         f"Train GT\nclass={train_fg_classes[train_idx]}"),
-
-        (axes[1, 0], train_image, train_pred,
-         "Train prediction"),
-
-        (axes[0, 1], val_image, val_gt,
-         f"Validation GT\nclass={val_fg_classes[val_idx]}"),
-
-        (axes[1, 1], val_image, val_pred,
-         "Validation prediction"),
+        (
+            axes[0],
+            train_image,
+            train_gt,
+            f"Train GT\n{train_fg_classes[train_idx]}"
+        ),
+        (
+            axes[1],
+            train_image,
+            train_pred,
+            "Train prediction"
+        ),
+        (
+            axes[2],
+            val_image,
+            val_gt,
+            f"Validation GT\n{val_fg_classes[val_idx]}"
+        ),
+        (
+            axes[3],
+            val_image,
+            val_pred,
+            "Validation prediction"
+        ),
     ]
 
     for ax, image, heatmap, title in plots:
@@ -232,8 +249,9 @@ def plot_train_val_gt_pred(
             extent=(0, image.shape[1], image.shape[0], 0),
             interpolation="bilinear",
         )
-        ax.set_title(title)
+        ax.set_title(title, fontsize=10)
         ax.axis("off")
 
-    fig.suptitle("Training vs validation qualitative comparison", fontsize=14)
+    #fig.suptitle("Training vs validation qualitative comparison", fontsize=13)
+
     plt.show()

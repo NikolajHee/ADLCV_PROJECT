@@ -188,8 +188,8 @@ def evaluate(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--checkpoint", type=Path, required=True)
-    parser.add_argument("--preprocess-dir", type=Path, default=Path("data/preprocessed_targets_top20"))
+    parser.add_argument("--checkpoint", type=Path, required=True, default=Path("checkpoints/best_model.pt"))
+    parser.add_argument("--preprocess-dir", type=Path, default=Path("data/preprocessed_targets"))
     parser.add_argument("--in-dist", type=Path, required=True)
     parser.add_argument("--ooc", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
