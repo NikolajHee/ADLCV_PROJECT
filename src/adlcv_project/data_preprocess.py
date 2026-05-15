@@ -256,14 +256,17 @@ def preprocess_training_targets(
 
     hf_data = dataset.hf_data
 
+    print("Building class vocab...")
     class_to_id, id_to_class = build_class_vocab(hf_data)
 
+    print("Computing global scale bin edges...")
     scale_bin_edges = compute_global_scale_bin_edges(
         hf_data,
         label=label,
         num_scales=num_scales,
     )
 
+    print("Grouping rows by scene and class...")
     grouped = group_rows_by_scene_and_class(hf_data, label=label)
 
     train_grouped, val_grouped = split_grouped_by_bg_path(
